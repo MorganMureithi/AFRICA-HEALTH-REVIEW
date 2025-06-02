@@ -1,0 +1,429 @@
+---
+title: "Africa Health Review"
+author: "Morgan Mureithi"
+date: "2025-05-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+#QUESTION 1
+#Importing the HIV_data 2000-2023
+```{r Loading the data}
+library(readr)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+data_HIV <- read.csv(file.choose())
+View(data_HIV)
+```
+
+
+#Separating Values with the Ranges in the Value column
+```{r}
+data_HIV <- data_HIV %>%
+  mutate(
+    Infected = str_trim(str_extract(Value,"^[^\\[]+")),
+    Range_value = str_extract(Value,"\\[.*\\]")
+  )
+View(data_HIV)
+```
+
+
+#Replacing 'No data' with zero
+```{r}
+data_HIV<-data_HIV %>%
+  mutate(
+    Infected = ifelse(Infected == 'No data',0,Infected)
+  )
+View(data_HIV)
+```
+
+
+#Handling Censored-data(Non-Exact values in the Value column,using Tobit Model)
+```{r}
+Censored_data<-data_HIV %>%
+  filter(str_detect(Infected,"<"))%>%
+  distinct(Infected)
+View(Censored_data)
+summary(data_HIV$Infected)
+data_HIV<-data_HIV %>%
+  mutate(Infected = str_trim(Infected),
+         Censored = str_detect(Infected,"<"),
+         New_Infected = str_replace(Infected,"<",""))
+unique(data_HIV$New_Infected)
+data_HIV$New_Infected<-as.numeric(gsub(" ","",data_HIV$New_Infected))
+library(AER)
+data_HIV$CensoringThreshold<-ifelse(data_HIV$Censored == TRUE,
+                                    ifelse(data_HIV$New_Infected <= 100,100,
+                                           ifelse(data_HIV$New_Infected <= 200,
+                                                  200,500))
+                                    ,NA)
+formula<-as.formula("New_Infected ~ ParentLocationCode + Period ")
+model<-tobit(formula,data=data_HIV,left = min(data_HIV$CensoringThreshold,
+                                              na.rm = TRUE))
+print(summary(model))
+data_HIV$Predicted_Infections<-predict(model)
+data_HIV$Predicted_Infections<-ifelse(data_HIV$Predicted_Infections < 0,0,
+                                      data_HIV$Predicted_Infections)
+data_HIV$Predicted_Infections<-ifelse(data_HIV$Censored,
+                              pmin(data_HIV$Predicted_Infections,
+                                   data_HIV$CensoringThreshold),
+                              data_HIV$Predicted_Infections)
+data_HIV$HIV_cases<-ifelse(data_HIV$Censored,
+                                data_HIV$Predicted_Infections,
+                                data_HIV$New_Infected)
+View(data_HIV$HIV_cases)
+```
+
+
+#Establishing Countries contributing to 75% of the global burden
+```{r}
+Country_data_HIV <- data_HIV %>%
+  group_by(Location) %>%
+  summarise(Total_HIV_cases = sum(HIV_cases)) %>%
+  arrange(desc(Total_HIV_cases))
+View(Country_data_HIV)
+Country_data_HIV <- Country_data_HIV %>%
+  mutate(Cumulative_HIV_cases = cumsum(Total_HIV_cases),
+         Global_cases = sum(Total_HIV_cases),
+         Cumulative_Percentage = (Cumulative_HIV_cases/Global_cases)* 100)
+Leading_Country_Contributor <- Country_data_HIV %>%
+  filter(Cumulative_Percentage < 76)
+View(Leading_Country_Contributor)
+```
+
+
+#Visualizing Leading Country Contributors to 75% of the Global HIV-Case Burden
+```{r}
+ggplot(Leading_Country_Contributor,aes(x = Location,y = Total_HIV_cases))+
+  geom_bar(stat = "identity", fill = "royalblue")+
+  labs(title = "Leading Contributors of HIV Cases Globally(2000-2023)",
+       x="Countries",
+       y="Cases")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+#Establishing Countries contributing to 75% of the HIV Case burden within WHO #Regions
+```{r}
+Region_data_HIV <- data_HIV %>%
+  group_by(ParentLocationCode ,Location) %>%
+  mutate(Total_HIV_cases = sum(HIV_cases)) %>%
+  arrange(ParentLocationCode,desc(Total_HIV_cases)) %>%
+  mutate(Region_Total = sum(Total_HIV_cases),
+         Cumulative_HIV_cases = cumsum(Total_HIV_cases),
+         Cumulative_Percentage = (Cumulative_HIV_cases/Region_Total)* 100
+         )
+View(Region_data_HIV)
+Leading_Region_Contributor <- Region_data_HIV %>%
+  filter(Cumulative_Percentage < 76)
+View(Leading_Region_Contributor)
+```
+
+
+#Visualizing Leading Country Contributors to the 75% of HIV-Case Burden within Each #WHO Region
+```{r}
+ggplot(Leading_Region_Contributor,aes(x = Location,y = Total_HIV_cases))+
+  geom_bar(stat = "identity", fill = "royalblue")+
+  facet_wrap(~ParentLocationCode, scales = "free")+
+  labs(title = "Leading Countries to HIV-Case Burden per Region",
+       x = "Country",
+       y = "HIV_Cases")+
+  theme(axis.title = element_text(angle = 45, hjust = 1))
+```
+
+
+#Loading Multidimensional Poverty Headcount Ratio data
+```{r}
+library(readxl)
+WorldBank_Poverty_data <- read_excel(file.choose(),col_names = FALSE)
+View(WorldBank_Poverty_data)
+```
+
+
+#Cleanig Loaded data:WorldBank_Poverty_data by setting headers
+```{r}
+WorldBank_Poverty_data <- WorldBank_Poverty_data[-1, ]
+na_or_blank <- function(x) {
+  is.na(x) | trimws(x) == ""}
+WorldBank_Poverty_data[1, ] <- ifelse(
+  na_or_blank(WorldBank_Poverty_data[1, ]),
+  as.character(WorldBank_Poverty_data[2, ]),
+  as.character(WorldBank_Poverty_data[1, ]))
+colnames(WorldBank_Poverty_data) <- as.character(WorldBank_Poverty_data[1, ])
+WorldBank_Poverty_data <- WorldBank_Poverty_data[-c(1,2), ]
+colnames(WorldBank_Poverty_data)
+```
+
+
+#Merging HIV data with Multidimensional Poverty data
+```{r}
+colnames(WorldBank_Poverty_data)[colnames(WorldBank_Poverty_data) == 
+                                   "Country code"] <- "Country"
+colnames(data_HIV)[colnames(data_HIV) == "SpatialDimValueCode"] <- "Country"
+HIV_Poverty_data <- merge(data_HIV,WorldBank_Poverty_data,by = "Country")
+View(HIV_Poverty_data)
+```
+
+#Checking for Missing value in the Poverty Headcount ratio column in the World Bank #data
+```{r}
+is.na(WorldBank_Poverty_data$`Multidimensional poverty headcount ratio (%)`)
+HIV_Poverty_data$`Multidimensional poverty headcount ratio (%)` <- as.numeric(
+  HIV_Poverty_data$`Multidimensional poverty headcount ratio (%)`)
+```
+
+
+#Simple Linear Regression to assess the Relationship between people living with HIV #and Poverty HeadCount Ratio
+```{r}
+HIV_Poverty <- lm(HIV_cases ~ `Multidimensional poverty headcount ratio (%)`,
+                  data = HIV_Poverty_data)
+summary(HIV_Poverty)
+```
+#Summary
+#There is a positive relationship between Poverty levels and presence of HIV cases
+#For every 7575 units dip into poverty,there is about 50,000 rise in HIV infections
+
+
+#Preparing data for model fitting by Handling Missing values
+```{r}
+HIV_Poverty_data[HIV_Poverty_data == " "] <- NA
+HIV_Poverty_data[HIV_Poverty_data == "-"] <- NA
+#Converting select columns to Numeric
+to_numeric <- c("Multidimensional poverty headcount ratio (%)",
+                "Drinking water (%)",
+                "Electricity (%)","Educational enrollment (%)",
+                "Educational attainment (%)",
+                "Deprivation rate (share of population)","Survey year")
+HIV_Poverty_data[to_numeric] <- lapply(HIV_Poverty_data[to_numeric], as.numeric)
+fill_na_numeric <- c("Multidimensional poverty headcount ratio (%)",
+                     "Drinking water (%)",
+                     "Electricity (%)","Educational enrollment (%)",
+                     "Educational attainment (%)",
+                     "Deprivation rate (share of population)","Survey year")
+HIV_Poverty_data[fill_na_numeric] <- lapply(HIV_Poverty_data[fill_na_numeric],
+                                            function(x) {
+  x[is.na(x)] <- 0
+  return(x)
+})
+HIV_Poverty_data$`Sanitation (%)` <- as.numeric(HIV_Poverty_data$`Sanitation (%)`)
+HIV_Poverty_data$`Sanitation (%)`[is.na(HIV_Poverty_data$`Sanitation (%)`)] <- 0
+HIV_Poverty_data$Country <- as.factor(HIV_Poverty_data$Country)
+HIV_Poverty_data <- HIV_Poverty_data %>%
+  rename("Income" = "Deprivation rate (share of population)")
+```
+
+#Establising Factors contributing to the Poverty Ratio(using Linear Mixed Model)
+#Scaling Predictor Variables
+```{r}
+library(lme4)
+HIV_Poverty_data <- HIV_Poverty_data %>%
+  rename(
+    Multidimensional_poverty = `Multidimensional poverty headcount ratio (%)`,
+    Survey_year = `Survey year`
+  )
+HIV_Poverty_data$Income_scaled <- scale(HIV_Poverty_data$Income)
+HIV_Poverty_data$Education_attainment_scaled <- scale(
+  HIV_Poverty_data$`Educational attainment (%)`)
+HIV_Poverty_data$Sanitation_scaled <- scale(HIV_Poverty_data$`Sanitation (%)`)
+HIV_Poverty_data$Electricity_scaled <- scale(HIV_Poverty_data$`Electricity (%)`)
+HIV_Poverty_data$Water_scaled <- scale(HIV_Poverty_data$`Drinking water (%)`)
+library(standardize)
+library(lme4)
+Poverty_contributing_factors_model <-  suppressWarnings( lmer(Multidimensional_poverty ~ Income_scaled + Education_attainment_scaled + Electricity_scaled +  Water_scaled + (1 | Country) + (1 | Survey_year),data = HIV_Poverty_data))
+summary(Poverty_contributing_factors_model)
+```
+
+
+#Summary of Findings
+#B0(Y-intercept):13.0935,this is the Expected value of the Multidimensional
+#Poverty Head Count Ratio %,at the of the mean confounding variables. 
+#B1(beta 1 ~ Income_scaled):A unit increase in the Income (Monetary %) leads to a 
+#significant decrease in Poverty ratio by about 8.6354 units.
+#B2((beta 2 ~ Education_attainment_scaled): A unit increase in the Education Attainment leads to 4.9679 decrease in Poverty ratio.
+#B3(beta 3 ~ Electricty) : A unit increase in the the access to Electricity by households leads to about 7.6 decrease in Poverty ratio.
+#B4(beta 4 ~ Drinking water) :A unit increase in the the access to clean drinking water by households leads to about 3.1 decrease in Poverty ratio.
+#Income,is the strongest predictor to the Poverty Ratio
+#Accounting for Random effects(Country and Year):There is a significant variation in the Poverty rates across countries.
+#On the other hand,there is little change in poverty rates between the year the surveys were done.
+#Due to high multicolliniearity within the predictors,the model fails to converge
+
+#QUESTION 2
+#Loading the data
+```{r}
+library(readr)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+Neo_UnderFive<-read.csv(file.choose())
+View(Neo_UnderFive)
+```
+
+
+#Filtering World Data to EAC countries
+```{r}
+unique(Neo_UnderFive$Geographic.area)
+EAC_Neo_UnderFive<-Neo_UnderFive %>%
+  filter(Geographic.area %in% c("Burundi","Democratic Republic of the Congo","Ethiopia",
+         "Kenya","Rwanda","South Sudan","Somalia","Uganda"))
+View(EAC_Neo_UnderFive)
+```
+
+
+#Having Year as Year(stand-alone)
+```{r}
+EAC_Neo_UnderFive$YEAR<-as.numeric(sapply(
+  str_split(EAC_Neo_UnderFive$Series.Year,pattern = "-"),
+  function(x) max(as.numeric(x))))
+```
+
+
+#To filter latest Country Estimates
+```{r}
+library(sp)
+library(viridisLite)      
+Latest_estimate<-EAC_Neo_UnderFive %>%
+  group_by(Geographic.area) %>%
+  filter(YEAR == max(YEAR))
+View(Latest_estimate)
+unique(Latest_estimate$Indicator)
+```
+
+
+#Filtering to Neonatal Data Indicator
+```{r}
+Latest_estimate_Neo<-Latest_estimate %>%
+  filter(Indicator == 'Neonatal mortality rate')
+View(Latest_estimate_Neo)
+```
+
+
+#Filtering to UnderFive Indicator
+```{r}
+Latest_estimate_UnderFive<-Latest_estimate %>%
+  filter(Indicator == 'Under-five mortality rate')
+View(Latest_estimate_UnderFive)
+```
+
+
+#Preparing for Visualization using Shapefile
+```{r}
+library(shapefiles)
+data_SP <- read.shapefile("C:/Users/hp/Downloads/Shapefile/ne_50m_admin_0_countries")
+View(data_SP$dbf$dbf) 
+unique(data_SP$dbf$dbf$NAME)
+Latest_estimate_Neo$Geographic.area[Latest_estimate_Neo$Geographic.area == "Democratic Republic of the Congo"] <- "Dem. Rep. Congo"
+Latest_estimate_Neo$Geographic.area[Latest_estimate_Neo$Geographic.area == "South Sudan" ] <- "S. Sudan"
+correctly_matched <- Latest_estimate$Observation.Value[match(data_SP$dbf$dbf$NAME, Latest_estimate$Geographic.area)]
+data_SP$dbf$dbf$Observation.Value <- correctly_matched
+data_SP$dbf$dbf$Observation.Value <- Latest_estimate_Neo$Observation.Value[
+  match(data_SP$dbf$dbf$NAME,Latest_estimate_Neo$Geographic.area)]
+color_palette <- viridis(100)
+EAC_countries <- c("Burundi", "Dem. Rep. Congo", "Ethiopia", 
+                   "Kenya", "Rwanda", "S. Sudan", "Somalia", "Uganda")
+EAC_only <- data_SP$dbf$dbf$NAME %in% EAC_countries
+East_Africa <- list(
+  shp = list(shp = data_SP$shp$shp[EAC_only]),
+  dbf = list(dbf = data_SP$dbf$dbf[EAC_only, ])
+)
+Collours <- color_palette[as.numeric(cut(East_Africa$dbf$dbf$Observation.Value, breaks = 100))]
+plot.new()
+xrange <- range(unlist(lapply(East_Africa$shp$shp, function(x) x$points[,1])))
+yrange <- range(unlist(lapply(East_Africa$shp$shp, function(x) x$points[,2])))
+plot.window(xlim = xrange, ylim = yrange, asp = 1)
+for (i in 1:length(East_Africa$shp$shp)) {
+  country <- East_Africa$shp$shp[[i]]
+  parts <- country$parts
+  n_parts <- length(parts)
+  if (n_parts == 1) {
+    polygon(country$points, col = Collours[i], border = "black")
+  } else {for (p in 1:n_parts) {
+    start <- parts[p]+1
+    end <- ifelse(p == n_parts, nrow(country$points), parts[p+1])
+    polygon(country$points[start:end, ], col = Collours[i], border = "black")}}}
+#Under_Five Mortality Indicator
+Latest_estimate_UnderFive$Geographic.area[Latest_estimate_UnderFive$Geographic.area == "Democratic Republic of the Congo"] <- "Dem. Rep. Congo"
+Latest_estimate_UnderFive$Geographic.area[Latest_estimate_UnderFive$Geographic.area == "South Sudan" ] <- "S. Sudan"
+matched_correctly <- Latest_estimate_UnderFive$Observation.Value[match(data_SP$dbf$dbf$NAME, Latest_estimate_UnderFive$Geographic.area)]
+data_SP$dbf$dbf$Observation.Value <- matched_correctly
+data_SP$dbf$dbf$Observation.Value <- Latest_estimate_UnderFive$Observation.Value[
+  match(data_SP$dbf$dbf$NAME,Latest_estimate_UnderFive$Geographic.area)]
+color_palette <- viridis(100)
+EAC_countries <- c("Burundi", "Dem. Rep. Congo", "Ethiopia", 
+                   "Kenya", "Rwanda", "S. Sudan", "Somalia", "Uganda")
+EAC_only <- data_SP$dbf$dbf$NAME %in% EAC_countries
+East_Africa <- list(
+  shp = list(shp = data_SP$shp$shp[EAC_only]),
+  dbf = list(dbf = data_SP$dbf$dbf[EAC_only, ])
+)
+Collours <- color_palette[as.numeric(cut(East_Africa$dbf$dbf$Observation.Value, breaks = 100))]
+plot.new()
+xrange <- range(unlist(lapply(East_Africa$shp$shp, function(x) x$points[,1])))
+yrange <- range(unlist(lapply(East_Africa$shp$shp, function(x) x$points[,2])))
+plot.window(xlim = xrange, ylim = yrange, asp = 1)
+for (i in 1:length(East_Africa$shp$shp)) {
+  country <- East_Africa$shp$shp[[i]]
+  parts <- country$parts
+  n_parts <- length(parts)
+  if (n_parts == 1) {
+    polygon(country$points, col = Collours[i], border = "black")
+  } else {for (p in 1:n_parts) {
+    start <- parts[p]+1
+    end <- ifelse(p == n_parts, nrow(country$points), parts[p+1])
+    polygon(country$points[start:end, ], col = Collours[i], border = "black")}}}
+```
+
+
+#Visualizing Neonatal Mortality Trend across EAC
+```{r}
+View(EAC_Neo_UnderFive)
+unique(EAC_Neo_UnderFive$Indicator)
+NeoNatal_Mortality <- EAC_Neo_UnderFive %>%
+  filter(Indicator == 'Neonatal mortality rate')
+Avg_NeoNatal_Mortality <- NeoNatal_Mortality %>%
+  group_by(Geographic.area,YEAR) %>%
+  mutate(Avg_Cases = mean(Observation.Value))
+ggplot(Avg_NeoNatal_Mortality,aes(x = YEAR, y = Avg_Cases ,colour = Geographic.area))+
+  geom_point()+
+  geom_smooth(method = "lm" ,se = FALSE)+
+  labs(title = "Average Neonatal Mortality in EAC",
+       x = "Year",
+       y = "Average_Cases")
+```
+
+
+#Visualizing Under Five Mortality Trend across EAC
+```{r}
+UnderFive_Mortality <- EAC_Neo_UnderFive %>%
+  filter(Indicator == 'Under-five mortality rate')
+Avg_UnderFive_Mortality <- UnderFive_Mortality %>%
+  group_by(Geographic.area,YEAR) %>%
+  mutate(Avg_Cases = mean(Observation.Value))
+ggplot(Avg_UnderFive_Mortality,aes(x = YEAR, y = Avg_Cases ,colour = Geographic.area))+
+  geom_point()+
+  geom_smooth(method = "lm" ,se = FALSE)+
+  labs(title = "Average UnderFive_Mortality in EAC",
+       x = "Year",
+       y = "Average_Cases")
+```
+
+
+#Mortality Trend Findings
+
+# 1.Under_Five Mortality:South Sudan and Somalia,have the highest average 
+#Under_Five Mortality rates,while the rest of the countries have declining cases.
+
+#2.Neo-natal mortality:South Sudan,Ethiopia and Somalia have highest average
+#Neo-natal cases,while,Rwanda,Uganda,Burundi and Kenya recorded declining cases.
+#Democratic Republic of Congo has for many years,registered slightly unchanging Neo-natal deaths.
+
+
